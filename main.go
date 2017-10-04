@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math"
 	"net/http"
@@ -17,6 +19,7 @@ import (
 var projectID string
 var e100kLetters []string = []string{"ABCDEFGH", "JKLMNPQR", "STUVWXYZ"}
 var n100kLetters []string = []string{"ABCDEFGHJKLMNPQRSTUV", "FGHJKLMNPQRSTUVABCDE"}
+var baseUrl = "https://www.googleapis.com/storage/v1/b/gcp-public-data-sentinel-2/o?prefix="
 
 //http://www.movable-type.co.uk/scripts/latlong-utm-mgrs.html
 func toMgrs(coord UTM.Coordinate, band rune) string {
@@ -55,48 +58,75 @@ func getBand(lat float64) rune {
 	return UTMzdlChars[int(math.Floor((lat+80)/8))]
 }
 
-var baseUrl = "https://console.cloud.google.com/storage/browser/"
-
-type Result struct {
+type QueryResult struct {
 	Granule_id string
 	Base_url   string
 }
 
-func getUrlsFromMgrs(mgrs string) {
-	ctx := context.Background()
+func formatUrl(result QueryResult) string {
+	return fmt.Sprintf("%s%s/GRANULE/%s/IMG_DATA/", baseUrl,
+		result.Base_url[32:], result.Granule_id)
+}
 
-	// Creates a client.
+func getUrlsFromMgrs(mgrs string) []string {
+	ctx := context.Background()
 	client, err := bigquery.NewClient(ctx, projectID)
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
 	}
-
 	q := client.Query(fmt.Sprintf(`
 			SELECT granule_id, base_url
 			FROM %sbigquery-public-data.cloud_storage_geo_index.sentinel_2_index%s
 			WHERE (mgrs_tile LIKE '%s%s')
-		`, "`", "`", mgrs, "%"))
-	fmt.Println(q.Q)
+			`, "`", "`", mgrs, "%"))
+	//fmt.Println(q.Q)
 
 	it, err := q.Read(ctx)
 	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
-		// TODO: Handle error.
+		log.Fatalf("Query failed to execute: %v", err)
 	}
 
-	///urls := make([]string, 0, 0)
+	urls := make([]string, 0, 0)
 	for {
-		var values Result
-		err := it.Next(&values)
+		var value QueryResult
+		err := it.Next(&value)
 		if err == iterator.Done {
 			break
 		}
 		if err != nil {
 			break
-			// TODO: Handle error.
 		}
-		fmt.Println(values)
+		urls = append(urls, formatUrl(value))
 	}
+	return urls
+}
+
+func getImageUrls(directoryUrls []string) []string {
+	client := http.Client{}
+	urls := make([]string, 0, 0)
+	for _, url := range directoryUrls {
+
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			log.Fatal(err)
+		}
+		res, resErr := client.Do(req)
+		if resErr != nil {
+			log.Fatal(resErr)
+		}
+		body, readErr := ioutil.ReadAll(res.Body)
+		if readErr != nil {
+			log.Fatal(readErr)
+		}
+		c := make(map[string]interface{})
+		json.Unmarshal(body, &c)
+		items := c["items"].([]interface{})
+		for _, item := range items {
+			itemMap := item.(map[string]interface{})
+			urls = append(urls, itemMap["mediaLink"].(string))
+		}
+	}
+	return urls
 }
 
 func imageHandler(w http.ResponseWriter, r *http.Request) {
@@ -105,8 +135,13 @@ func imageHandler(w http.ResponseWriter, r *http.Request) {
 	utm := getUTM(lat, lng)
 	band := getBand(lat)
 	mgrs := toMgrs(utm, band)
+	urls := getUrlsFromMgrs(mgrs)
+	imageUrls := getImageUrls(urls)
 
-	fmt.Fprintf(w, "MGRS: %s\n", mgrs)
+	encoder := json.NewEncoder(w)
+	//avoid escape &
+	encoder.SetEscapeHTML(false)
+	encoder.Encode(imageUrls)
 }
 
 func main() {
