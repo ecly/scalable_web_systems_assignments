@@ -19,7 +19,7 @@ var e100kLetters []string = []string{"ABCDEFGH", "JKLMNPQR", "STUVWXYZ"}
 var n100kLetters []string = []string{"ABCDEFGHJKLMNPQRSTUV", "FGHJKLMNPQRSTUVABCDE"}
 
 //http://www.movable-type.co.uk/scripts/latlong-utm-mgrs.html
-func toMgrs(coord UTM.Coordinate, band rune) (string, string) {
+func toMgrs(coord UTM.Coordinate, band rune) string {
 	// MGRS zone is same as UTM zone
 	var zone = coord.ZoneNumber
 	var col = int(math.Floor(coord.Easting / 100e3))
@@ -27,7 +27,13 @@ func toMgrs(coord UTM.Coordinate, band rune) (string, string) {
 	var row = int(math.Floor(coord.Northing/100e3)) % 20
 	var n100k = n100kLetters[(zone-1)%2][row : row+1]
 
-	return e100k, n100k
+	var zoneString string
+	if zone < 10 {
+		zoneString = "0" + strconv.Itoa(zone)
+	} else {
+		zoneString = strconv.Itoa(zone)
+	}
+	return zoneString + string(band) + e100k + n100k
 }
 
 func getUTM(lat float64, lng float64) UTM.Coordinate {
@@ -98,9 +104,9 @@ func imageHandler(w http.ResponseWriter, r *http.Request) {
 	lng, _ := strconv.ParseFloat(r.FormValue("lng"), 64)
 	utm := getUTM(lat, lng)
 	band := getBand(lat)
-	e100k, n100k := toMgrs(utm, band)
+	mgrs := toMgrs(utm, band)
 
-	fmt.Fprintf(w, "UTM: %d, Band: %c, e100k: %s, n100k: %s", utm.ZoneNumber, band, e100k, n100k)
+	fmt.Fprintf(w, "MGRS: %s\n", mgrs)
 }
 
 func main() {
@@ -109,5 +115,8 @@ func main() {
 	r := mux.NewRouter()
 	r.HandleFunc("/images", imageHandler)
 	http.Handle("/", r)
-	getUrlsFromMgrs("05MKP")
+	//getUrlsFromMgrs("05MKP")
+	if err := http.ListenAndServe("127.0.0.1:8080", nil); err != nil {
+		log.Fatal(err)
+	}
 }
