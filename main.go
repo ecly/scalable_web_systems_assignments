@@ -1,11 +1,11 @@
-package main
+package app
 
 import (
-	"context"
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"math"
 	"net/http"
 	"strconv"
@@ -13,14 +13,18 @@ import (
 	"cloud.google.com/go/bigquery"
 	"github.com/gorilla/mux"
 	"github.com/im7mortal/UTM"
-	geo "github.com/martinlindhe/google-geolocate"
+	"golang.org/x/net/context"
 	"google.golang.org/api/iterator"
+	"google.golang.org/appengine"
+	"google.golang.org/appengine/log"
+	"google.golang.org/appengine/urlfetch"
+	"googlemaps.github.io/maps"
 )
 
-var projectID string
 var e100kLetters []string = []string{"ABCDEFGH", "JKLMNPQR", "STUVWXYZ"}
 var n100kLetters []string = []string{"ABCDEFGHJKLMNPQRSTUV", "FGHJKLMNPQRSTUVABCDE"}
 var storageApiUrl = "https://www.googleapis.com/storage/v1/b/gcp-public-data-sentinel-2/o?prefix="
+var googleGeoApiUrl = "https://maps.googleapis.com/maps/api/geocode/json?sensor=false&address="
 var apiKey = "AIzaSyBfbOhnMrQFj0BUHWA4EABJMW8qIts49WU"
 
 //https://gis.stackexchange.com/questions/15608/how-to-calculate-the-utm-latitude-band
@@ -29,6 +33,17 @@ var UTMzdlChars []rune = []rune("CDEFGHJKLMNPQRSTUVWXX")
 type QueryResult struct {
 	Granule_id string
 	Base_url   string
+}
+
+type GoogleGeocodeResponse struct {
+	Results []struct {
+		Geometry struct {
+			Location struct {
+				Lat float64
+				Lng float64
+			}
+		}
+	}
 }
 
 //http://www.movable-type.co.uk/scripts/latlong-utm-mgrs.html
@@ -72,13 +87,13 @@ func formatUrl(result QueryResult) string {
 		result.Base_url[32:], result.Granule_id)
 }
 
-func getUrlsFromMgrs(mgrs string) []string {
-	ctx := context.Background()
+func getUrlsFromMgrs(mgrs string, ctx context.Context) []string {
 	// Create a BigQuery client for the given projectID
 	// - the projectID needs to have permissions to use BigQuery
+	projectID := appengine.AppID(ctx)
 	client, err := bigquery.NewClient(ctx, projectID)
 	if err != nil {
-		log.Fatalf("Failed to create client: %v", err)
+		log.Errorf(ctx, "Failed to create client: %v", err)
 	}
 
 	// using a dirty hack to insert backticks into the string
@@ -90,7 +105,7 @@ func getUrlsFromMgrs(mgrs string) []string {
 
 	it, queryErr := q.Read(ctx)
 	if queryErr != nil {
-		log.Fatalf("Query failed to execute: %v", queryErr)
+		log.Errorf(ctx, "Query failed to execute: %v", queryErr)
 	}
 
 	urls := make([]string, 0, 0)
@@ -105,21 +120,21 @@ func getUrlsFromMgrs(mgrs string) []string {
 	return urls
 }
 
-func getImageUrlsInDirectory(directory string, ch chan []string) {
+func getImageUrlsInDirectory(directory string, ch chan []string, ctx context.Context) {
 	urls := make([]string, 0, 0)
-	client := http.Client{}
+	client := urlfetch.Client(ctx)
 
 	req, err := http.NewRequest(http.MethodGet, directory, nil)
 	if err != nil {
-		log.Fatal(err)
+		log.Errorf(ctx, err.Error())
 	}
 	res, resErr := client.Do(req)
 	if resErr != nil {
-		log.Fatal(resErr)
+		log.Errorf(ctx, resErr.Error())
 	}
 	body, readErr := ioutil.ReadAll(res.Body)
 	if readErr != nil {
-		log.Fatal(readErr)
+		log.Errorf(ctx, readErr.Error())
 	}
 	c := make(map[string]interface{})
 	json.Unmarshal(body, &c)
@@ -134,11 +149,11 @@ func getImageUrlsInDirectory(directory string, ch chan []string) {
 	ch <- urls
 }
 
-func getImageUrls(directoryUrls []string) []string {
+func getImageUrls(directoryUrls []string, ctx context.Context) []string {
 	urls := make([]string, 0, 0)
 	c := make(chan []string)
 	for _, directory := range directoryUrls {
-		go getImageUrlsInDirectory(directory, c)
+		go getImageUrlsInDirectory(directory, c, ctx)
 	}
 	for range directoryUrls {
 		urls = append(urls, <-c...)
@@ -147,13 +162,44 @@ func getImageUrls(directoryUrls []string) []string {
 	return urls
 }
 
-func getLatLngFromAddress(address string) (float64, float64) {
-	client := geo.NewGoogleGeo(apiKey)
-	res, _ := client.Geocode(address)
-	return res.Lat, res.Lng
+func getLatLngFromAddress(address string, ctx context.Context) (float64, float64) {
+	client := urlfetch.Client(ctx)
+	mapsClient, err := maps.NewClient(maps.WithAPIKey(apiKey), maps.WithHTTPClient(client))
+	if err != nil {
+		log.Errorf(ctx, "Failed to create client: %v", err)
+	}
+
+	request := &maps.GeocodingRequest{
+		Address: address,
+	}
+	res, _ := mapsClient.Geocode(ctx, request)
+
+	lat := res[0].Geometry.Location.Lat
+	lng := res[0].Geometry.Location.Lng
+	return lat, lng
+}
+
+// Since google appengine inexplicably will not compile when using
+// json.SetEscapeHTML(true), we've had to made our own version, where
+// we temporarily encode the json to a buffer, and replace escaped characters
+// with their unescaped counterpart
+func safeMarshalJson(imageUrls []string) string {
+	var b bytes.Buffer
+	writer := bufio.NewWriter(&b)
+	encoder := json.NewEncoder(writer)
+	encoder.Encode(imageUrls)
+
+	arr := b.Bytes()
+
+	arr = bytes.Replace(arr, []byte("\\u003c"), []byte("<"), -1)
+	arr = bytes.Replace(arr, []byte("\\u003e"), []byte(">"), -1)
+	arr = bytes.Replace(arr, []byte("\\u0026"), []byte("&"), -1)
+
+	return string(arr)
 }
 
 func imageHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := appengine.NewContext(r)
 	var lat, lng float64
 	// if param is an address, get latlng from from google geocode api
 	address := r.FormValue("address")
@@ -161,28 +207,21 @@ func imageHandler(w http.ResponseWriter, r *http.Request) {
 		lat, _ = strconv.ParseFloat(r.FormValue("lat"), 64)
 		lng, _ = strconv.ParseFloat(r.FormValue("lng"), 64)
 	} else {
-		lat, lng = getLatLngFromAddress(address)
+		lat, lng = getLatLngFromAddress(address, ctx)
 	}
 
 	utm := getUTM(lat, lng)
 	band := getBand(lat)
 	mgrs := toMgrs(utm, band)
-	urls := getUrlsFromMgrs(mgrs)
-	imageUrls := getImageUrls(urls)
+	urls := getUrlsFromMgrs(mgrs, ctx)
+	imageUrls := getImageUrls(urls, ctx)
 
-	encoder := json.NewEncoder(w)
-	//avoid escape &
-	encoder.SetEscapeHTML(false)
-	encoder.Encode(imageUrls)
+	data := safeMarshalJson(imageUrls)
+	fmt.Fprint(w, data)
 }
 
-func main() {
-	projectID = "ecly-178408"
-	//projectID = os.Getenv("")
+func init() {
 	r := mux.NewRouter()
 	r.HandleFunc("/images", imageHandler)
 	http.Handle("/", r)
-	if err := http.ListenAndServe("127.0.0.1:8080", nil); err != nil {
-		log.Fatal(err)
-	}
 }
