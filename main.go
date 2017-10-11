@@ -20,9 +20,16 @@ import (
 var projectID string
 var e100kLetters []string = []string{"ABCDEFGH", "JKLMNPQR", "STUVWXYZ"}
 var n100kLetters []string = []string{"ABCDEFGHJKLMNPQRSTUV", "FGHJKLMNPQRSTUVABCDE"}
-var baseUrl = "https://www.googleapis.com/storage/v1/b/gcp-public-data-sentinel-2/o?prefix="
-var googleApi = "https://maps.googleapis.com/maps/api/geocode/json?address="
+var storageApiUrl = "https://www.googleapis.com/storage/v1/b/gcp-public-data-sentinel-2/o?prefix="
 var apiKey = "AIzaSyBfbOhnMrQFj0BUHWA4EABJMW8qIts49WU"
+
+//https://gis.stackexchange.com/questions/15608/how-to-calculate-the-utm-latitude-band
+var UTMzdlChars []rune = []rune("CDEFGHJKLMNPQRSTUVWXX")
+
+type QueryResult struct {
+	Granule_id string
+	Base_url   string
+}
 
 //http://www.movable-type.co.uk/scripts/latlong-utm-mgrs.html
 func toMgrs(coord UTM.Coordinate, band rune) string {
@@ -54,49 +61,43 @@ func getUTM(lat float64, lng float64) UTM.Coordinate {
 	return result
 }
 
-//https://gis.stackexchange.com/questions/15608/how-to-calculate-the-utm-latitude-band
-var UTMzdlChars []rune = []rune("CDEFGHJKLMNPQRSTUVWXX")
-
 func getBand(lat float64) rune {
 	return UTMzdlChars[int(math.Floor((lat+80)/8))]
 }
 
-type QueryResult struct {
-	Granule_id string
-	Base_url   string
-}
-
+// From a query result, formulate an url to the google storage api
+// for the folder of the QueryResult
 func formatUrl(result QueryResult) string {
-	return fmt.Sprintf("%s%s/GRANULE/%s/IMG_DATA/", baseUrl,
+	return fmt.Sprintf("%s%s/GRANULE/%s/IMG_DATA/", storageApiUrl,
 		result.Base_url[32:], result.Granule_id)
 }
 
 func getUrlsFromMgrs(mgrs string) []string {
 	ctx := context.Background()
+	// Create a BigQuery client for the given projectID
+	// - the projectID needs to have permissions to use BigQuery
 	client, err := bigquery.NewClient(ctx, projectID)
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
 	}
+
+	// using a dirty hack to insert backticks into the string
 	q := client.Query(fmt.Sprintf(`
 			SELECT granule_id, base_url
 			FROM %sbigquery-public-data.cloud_storage_geo_index.sentinel_2_index%s
 			WHERE (mgrs_tile LIKE '%s%s')
 			`, "`", "`", mgrs, "%"))
-	//fmt.Println(q.Q)
 
-	it, err := q.Read(ctx)
-	if err != nil {
-		log.Fatalf("Query failed to execute: %v", err)
+	it, queryErr := q.Read(ctx)
+	if queryErr != nil {
+		log.Fatalf("Query failed to execute: %v", queryErr)
 	}
 
 	urls := make([]string, 0, 0)
 	for {
 		var value QueryResult
 		err := it.Next(&value)
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
+		if err == iterator.Done || err != nil {
 			break
 		}
 		urls = append(urls, formatUrl(value))
@@ -122,6 +123,9 @@ func getImageUrlsInDirectory(directory string, ch chan []string) {
 	}
 	c := make(map[string]interface{})
 	json.Unmarshal(body, &c)
+
+	// get items as an array of maps, in which
+	// mediaLink coorresponds to the url to the download link
 	items := c["items"].([]interface{})
 	for _, item := range items {
 		itemMap := item.(map[string]interface{})
@@ -151,6 +155,7 @@ func getLatLngFromAddress(address string) (float64, float64) {
 
 func imageHandler(w http.ResponseWriter, r *http.Request) {
 	var lat, lng float64
+	// if param is an address, get latlng from from google geocode api
 	address := r.FormValue("address")
 	if address == "" {
 		lat, _ = strconv.ParseFloat(r.FormValue("lat"), 64)
@@ -158,6 +163,7 @@ func imageHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		lat, lng = getLatLngFromAddress(address)
 	}
+
 	utm := getUTM(lat, lng)
 	band := getBand(lat)
 	mgrs := toMgrs(utm, band)
@@ -175,9 +181,7 @@ func main() {
 	//projectID = os.Getenv("")
 	r := mux.NewRouter()
 	r.HandleFunc("/images", imageHandler)
-	r.HandleFunc("/images", imageHandler)
 	http.Handle("/", r)
-	//getUrlsFromMgrs("05MKP")
 	if err := http.ListenAndServe("127.0.0.1:8080", nil); err != nil {
 		log.Fatal(err)
 	}
