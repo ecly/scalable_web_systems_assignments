@@ -13,6 +13,7 @@ import (
 	"cloud.google.com/go/bigquery"
 	"github.com/gorilla/mux"
 	"github.com/im7mortal/UTM"
+	geo "github.com/martinlindhe/google-geolocate"
 	"google.golang.org/api/iterator"
 )
 
@@ -20,6 +21,8 @@ var projectID string
 var e100kLetters []string = []string{"ABCDEFGH", "JKLMNPQR", "STUVWXYZ"}
 var n100kLetters []string = []string{"ABCDEFGHJKLMNPQRSTUV", "FGHJKLMNPQRSTUVABCDE"}
 var baseUrl = "https://www.googleapis.com/storage/v1/b/gcp-public-data-sentinel-2/o?prefix="
+var googleApi = "https://maps.googleapis.com/maps/api/geocode/json?address="
+var apiKey = "AIzaSyBfbOhnMrQFj0BUHWA4EABJMW8qIts49WU"
 
 //http://www.movable-type.co.uk/scripts/latlong-utm-mgrs.html
 func toMgrs(coord UTM.Coordinate, band rune) string {
@@ -101,37 +104,60 @@ func getUrlsFromMgrs(mgrs string) []string {
 	return urls
 }
 
-func getImageUrls(directoryUrls []string) []string {
-	client := http.Client{}
+func getImageUrlsInDirectory(directory string, ch chan []string) {
 	urls := make([]string, 0, 0)
-	for _, url := range directoryUrls {
+	client := http.Client{}
 
-		req, err := http.NewRequest(http.MethodGet, url, nil)
-		if err != nil {
-			log.Fatal(err)
-		}
-		res, resErr := client.Do(req)
-		if resErr != nil {
-			log.Fatal(resErr)
-		}
-		body, readErr := ioutil.ReadAll(res.Body)
-		if readErr != nil {
-			log.Fatal(readErr)
-		}
-		c := make(map[string]interface{})
-		json.Unmarshal(body, &c)
-		items := c["items"].([]interface{})
-		for _, item := range items {
-			itemMap := item.(map[string]interface{})
-			urls = append(urls, itemMap["mediaLink"].(string))
-		}
+	req, err := http.NewRequest(http.MethodGet, directory, nil)
+	if err != nil {
+		log.Fatal(err)
 	}
+	res, resErr := client.Do(req)
+	if resErr != nil {
+		log.Fatal(resErr)
+	}
+	body, readErr := ioutil.ReadAll(res.Body)
+	if readErr != nil {
+		log.Fatal(readErr)
+	}
+	c := make(map[string]interface{})
+	json.Unmarshal(body, &c)
+	items := c["items"].([]interface{})
+	for _, item := range items {
+		itemMap := item.(map[string]interface{})
+		urls = append(urls, itemMap["mediaLink"].(string))
+	}
+	ch <- urls
+}
+
+func getImageUrls(directoryUrls []string) []string {
+	urls := make([]string, 0, 0)
+	c := make(chan []string)
+	for _, directory := range directoryUrls {
+		go getImageUrlsInDirectory(directory, c)
+	}
+	for range directoryUrls {
+		urls = append(urls, <-c...)
+	}
+
 	return urls
 }
 
+func getLatLngFromAddress(address string) (float64, float64) {
+	client := geo.NewGoogleGeo(apiKey)
+	res, _ := client.Geocode(address)
+	return res.Lat, res.Lng
+}
+
 func imageHandler(w http.ResponseWriter, r *http.Request) {
-	lat, _ := strconv.ParseFloat(r.FormValue("lat"), 64)
-	lng, _ := strconv.ParseFloat(r.FormValue("lng"), 64)
+	var lat, lng float64
+	address := r.FormValue("address")
+	if address == "" {
+		lat, _ = strconv.ParseFloat(r.FormValue("lat"), 64)
+		lng, _ = strconv.ParseFloat(r.FormValue("lng"), 64)
+	} else {
+		lat, lng = getLatLngFromAddress(address)
+	}
 	utm := getUTM(lat, lng)
 	band := getBand(lat)
 	mgrs := toMgrs(utm, band)
@@ -148,6 +174,7 @@ func main() {
 	projectID = "ecly-178408"
 	//projectID = os.Getenv("")
 	r := mux.NewRouter()
+	r.HandleFunc("/images", imageHandler)
 	r.HandleFunc("/images", imageHandler)
 	http.Handle("/", r)
 	//getUrlsFromMgrs("05MKP")
