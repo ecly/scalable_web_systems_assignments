@@ -192,6 +192,7 @@ func safeMarshalJson(imageUrls []string) string {
 	arr := b.Bytes()
 
 	arr = bytes.Replace(arr, []byte("\\u003c"), []byte("<"), -1)
+	arr = bytes.Replace(arr, []byte("\n"), []byte("<"), -1)
 	arr = bytes.Replace(arr, []byte("\\u003e"), []byte(">"), -1)
 	arr = bytes.Replace(arr, []byte("\\u0026"), []byte("&"), -1)
 

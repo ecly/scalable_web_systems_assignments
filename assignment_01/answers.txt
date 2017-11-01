@@ -1,0 +1,34 @@
+# Assignment 01
+
+## 1
+The images are stored in a filetree structure with buckets
+based on the the MGRS coordinate system. The filetree is further
+structured by the Standard Archive Format for Europe (SAFE).
+The metadata for the buckets is stored in .csv files within 
+the structure, however do not use the metadata for anything 
+directly within our code.
+
+## 2
+See code 'main.go'.
+
+Example url:
+https://ecly-178408.appspot.com/images?lat=37.4224764&lng=-122.0842499
+
+
+## 3
+We use the BigQuery to retrieve the folders for which we need
+to retrieve the images, making our lives substantially easier.
+
+For routing we use Gorilla, but seeing as we only route from
+'/images', this is a fairly insignificant part of the assignment.
+
+By using GoRoutines we manage to speed up our imageUrl retrieval
+up considerably, as we would otherwise be fetching 100+ urls,
+taking upwards 30 seconds depending heavily on the connection.
+
+## 4
+We implemented the bonus question. Below is a URL to try out:
+https://ecly-178408.appspot.com/images?address=Rued+Langgaards+Vej,7,2300,København+S
+
+Surprisingly works with spaces as well:
+https://ecly-178408.appspot.com/images?address=Rued Langgaards Vej,7,2300,København S
