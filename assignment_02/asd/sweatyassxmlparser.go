@@ -5,31 +5,30 @@ import (
     "fmt"
 )
 
-type GranuleList struct{
-    Granules []struct {
-        StripID     string `xml:"datastripIdentifier,attr"`
-        GranuleID   string `xml:"granuleIdentifier,attr"`
-        Images      []string `xml:"IMAGE_ID"`
-        ImageFiles  []string `xml:"IMAGE_FILES"`
-    } `xml:"General_Info>Product_Info>Product_Organisation>Granule_List>Granule"`
+type ImageInformation struct { 
+    GranuleList []Granule `xml:"General_Info>Product_Info>Product_Organisation>Granule_List>Granule"`
+    SpectralInfo []SpectralInformation `xml:"General_Info>Product_Image_Characteristics>Spectral_Information_List>Spectral_Information"`
+
 }
+type Granule struct {
+    StripID     string `xml:"datastripIdentifier,attr"`
+    GranuleID   string `xml:"granuleIdentifier,attr"`
+    Images      []string `xml:"IMAGE_ID"`
+    ImageFiles  []string `xml:"IMAGE_FILES"`
+} 
 
-type SpectralInformationList struct {
-    SpectralInformations []struct{
-        PhysicalBand    string `xml:"physicalBand,attr"`
-        BandID          string `xml:"bandId,attr"`
-        Wavelengths     []struct {
-            Min     float64 `xml:"MIN"`
-            Max     float64 `xml:"MAX"`
-            Central float64 `xml:"CENTRAL"`
-        } `xml:"Wavelength"`
-    } `xml:"General_Info>Product_Image_Characteristics>Spectral_Information_List>Spectral_Information"`
+type SpectralInformation struct{
+    PhysicalBand    string `xml:"physicalBand,attr"`
+    BandID          string `xml:"bandId,attr"`
+    Wavelengths     []struct {
+        Min     float64 `xml:"MIN"`
+        Max     float64 `xml:"MAX"`
+        Central float64 `xml:"CENTRAL"`
+    } `xml:"Wavelength"`
 }
-
-
 
 func main(){
-    var list SpectralInformationList
+    var list ImageInformation
     xml.Unmarshal(listXML, &list)
     fmt.Println(list)
 }
