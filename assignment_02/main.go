@@ -20,11 +20,13 @@ import (
 	"googlemaps.github.io/maps"
 )
 
-var storageAPIURL = "https://www.googleapis.com/storage/v1/b/gcp-public-data-sentinel-2/o?prefix="
-var googleGeoAPIURL = "https://maps.googleapis.com/maps/api/geocode/json?sensor=false&address="
-var apiKey = "AIzaSyBfbOhnMrQFj0BUHWA4EABJMW8qIts49WU"
-var maxConcurrentRequests = 100
+const storageAPIURL = "https://www.googleapis.com/storage/v1/b/gcp-public-data-sentinel-2/o?prefix="
+const googleGeoAPIURL = "https://maps.googleapis.com/maps/api/geocode/json?sensor=false&address="
+const apiKey = "AIzaSyBfbOhnMrQFj0BUHWA4EABJMW8qIts49WU"
+const maxConcurrentRequests = 100
 
+//semaphore limit total number of concurrent goroutines
+var sem = semaphore.New(maxConcurrentRequests)
 
 type queryResult struct {
 	Granule_id string
@@ -158,7 +160,6 @@ func initiateRequests(ctx context.Context, directoryUrls []string, c chan []stri
 	}
 }
 
-var sem = semaphore.New(maxConcurrentRequests)
 func getImageUrls(ctx context.Context, directoryUrls []string) []string {
 	urls := make([]string, 0, 0)
 	c := make(chan []string)

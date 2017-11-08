@@ -1,1 +1,0 @@
-http://localhost:8080/images/area?north_lat=-3.89&south_lat=-5.55&east_lng=28.63&west_lng=26.93
