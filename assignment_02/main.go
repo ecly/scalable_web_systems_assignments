@@ -48,6 +48,40 @@ func formatURL(result queryResult) string {
 }
 
 
+func getUrlsBetweenCoords(ctx context.Context, lat1 float64, lng1 float64, lat2 float64, lng2 float64) []string {
+	// Create a BigQuery client for the given projectID
+	// - the projectID needs to have permissions to use BigQuery
+	projectID := appengine.AppID(ctx)
+	client, err := bigquery.NewClient(ctx, projectID)
+	if err != nil {
+		log.Errorf(ctx, "Failed to create client: %v", err)
+	}
+
+	// using a dirty hack to insert backticks into the string
+	q := client.Query(fmt.Sprintf(`
+            SELECT granule_id, base_url 
+			FROM %sbigquery-public-data.cloud_storage_geo_index.sentinel_2_index%s
+            WHERE north_lat <= %f AND south_lat >= %f
+            AND west_lon >= %f AND east_lon <= %f
+			`, "`", "`", "%", lat1, lat2, lng1, lng2))
+
+	it, queryErr := q.Read(ctx)
+	if queryErr != nil {
+		log.Errorf(ctx, "Query failed to execute: %v", queryErr)
+	}
+
+	urls := make([]string, 0, 0)
+	for {
+		var value queryResult
+		err := it.Next(&value)
+		if err == iterator.Done || err != nil {
+			break
+		}
+		urls = append(urls, formatURL(value))
+	}
+	return urls
+}
+
 func getUrlsFromMgrs(ctx context.Context, mgrs string) []string {
 	// Create a BigQuery client for the given projectID
 	// - the projectID needs to have permissions to use BigQuery
