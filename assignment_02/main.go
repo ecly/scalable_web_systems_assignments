@@ -6,13 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"math"
 	"net/http"
 	"strconv"
 
 	"cloud.google.com/go/bigquery"
 	"github.com/gorilla/mux"
-	"github.com/im7mortal/UTM"
 	"golang.org/x/net/context"
 	"google.golang.org/api/iterator"
 	"google.golang.org/appengine"
@@ -21,21 +19,17 @@ import (
 	"googlemaps.github.io/maps"
 )
 
-var e100kLetters []string = []string{"ABCDEFGH", "JKLMNPQR", "STUVWXYZ"}
-var n100kLetters []string = []string{"ABCDEFGHJKLMNPQRSTUV", "FGHJKLMNPQRSTUVABCDE"}
-var storageApiUrl = "https://www.googleapis.com/storage/v1/b/gcp-public-data-sentinel-2/o?prefix="
-var googleGeoApiUrl = "https://maps.googleapis.com/maps/api/geocode/json?sensor=false&address="
+var storageAPIURL = "https://www.googleapis.com/storage/v1/b/gcp-public-data-sentinel-2/o?prefix="
+var googleGeoAPIURL = "https://maps.googleapis.com/maps/api/geocode/json?sensor=false&address="
 var apiKey = "AIzaSyBfbOhnMrQFj0BUHWA4EABJMW8qIts49WU"
 
-//https://gis.stackexchange.com/questions/15608/how-to-calculate-the-utm-latitude-band
-var UTMzdlChars []rune = []rune("CDEFGHJKLMNPQRSTUVWXX")
 
-type QueryResult struct {
-	Granule_id string
-	Base_url   string
+type queryResult struct {
+	GranuleID string
+	BaseURL   string
 }
 
-type GoogleGeocodeResponse struct {
+type googleGeocodeResponse struct {
 	Results []struct {
 		Geometry struct {
 			Location struct {
@@ -46,48 +40,15 @@ type GoogleGeocodeResponse struct {
 	}
 }
 
-//http://www.movable-type.co.uk/scripts/latlong-utm-mgrs.html
-func toMgrs(coord UTM.Coordinate, band rune) string {
-	// MGRS zone is same as UTM zone
-	var zone = coord.ZoneNumber
-	var col = int(math.Floor(coord.Easting / 100e3))
-	var e100k = e100kLetters[(zone-1)%3][col-1 : col]
-	var row = int(math.Floor(coord.Northing/100e3)) % 20
-	var n100k = n100kLetters[(zone-1)%2][row : row+1]
-
-	var zoneString string
-	if zone < 10 {
-		zoneString = "0" + strconv.Itoa(zone)
-	} else {
-		zoneString = strconv.Itoa(zone)
-	}
-	return zoneString + string(band) + e100k + n100k
-}
-
-func getUTM(lat float64, lng float64) UTM.Coordinate {
-	latLon := UTM.LatLon{
-		Latitude:  lat,
-		Longitude: lng,
-	}
-	result, err := latLon.FromLatLon()
-	if err != nil {
-		panic(err.Error())
-	}
-	return result
-}
-
-func getBand(lat float64) rune {
-	return UTMzdlChars[int(math.Floor((lat+80)/8))]
-}
-
 // From a query result, formulate an url to the google storage api
-// for the folder of the QueryResult
-func formatUrl(result QueryResult) string {
-	return fmt.Sprintf("%s%s/GRANULE/%s/IMG_DATA/", storageApiUrl,
-		result.Base_url[32:], result.Granule_id)
+// for the folder of the queryResult
+func formatURL(result queryResult) string {
+	return fmt.Sprintf("%s%s/GRANULE/%s/IMG_DATA/", storageAPIURL,
+		result.BaseURL[32:], result.GranuleID)
 }
 
-func getUrlsFromMgrs(mgrs string, ctx context.Context) []string {
+
+func getUrlsFromMgrs(ctx context.Context, mgrs string) []string {
 	// Create a BigQuery client for the given projectID
 	// - the projectID needs to have permissions to use BigQuery
 	projectID := appengine.AppID(ctx)
@@ -110,17 +71,18 @@ func getUrlsFromMgrs(mgrs string, ctx context.Context) []string {
 
 	urls := make([]string, 0, 0)
 	for {
-		var value QueryResult
+		var value queryResult
 		err := it.Next(&value)
 		if err == iterator.Done || err != nil {
 			break
 		}
-		urls = append(urls, formatUrl(value))
+		urls = append(urls, formatURL(value))
 	}
 	return urls
 }
 
-func getImageUrlsInDirectory(directory string, ch chan []string, ctx context.Context) {
+
+func getImageUrlsInDirectory(ctx context.Context, directory string, ch chan []string) {
 	urls := make([]string, 0, 0)
 	client := urlfetch.Client(ctx)
 
@@ -149,11 +111,11 @@ func getImageUrlsInDirectory(directory string, ch chan []string, ctx context.Con
 	ch <- urls
 }
 
-func getImageUrls(directoryUrls []string, ctx context.Context) []string {
+func getImageUrls(ctx context.Context, directoryUrls []string) []string {
 	urls := make([]string, 0, 0)
 	c := make(chan []string)
 	for _, directory := range directoryUrls {
-		go getImageUrlsInDirectory(directory, c, ctx)
+		go getImageUrlsInDirectory(ctx, directory, c)
 	}
 	for range directoryUrls {
 		urls = append(urls, <-c...)
@@ -162,7 +124,7 @@ func getImageUrls(directoryUrls []string, ctx context.Context) []string {
 	return urls
 }
 
-func getLatLngFromAddress(address string, ctx context.Context) (float64, float64) {
+func getLatLngFromAddress(ctx context.Context, address string) (float64, float64) {
 	client := urlfetch.Client(ctx)
 	mapsClient, err := maps.NewClient(maps.WithAPIKey(apiKey), maps.WithHTTPClient(client))
 	if err != nil {
@@ -183,7 +145,7 @@ func getLatLngFromAddress(address string, ctx context.Context) (float64, float64
 // json.SetEscapeHTML(true), we've had to made our own version, where
 // we temporarily encode the json to a buffer, and replace escaped characters
 // with their unescaped counterpart
-func safeMarshalJson(imageUrls []string) string {
+func safeMarshalJSON(imageUrls []string) string {
 	var b bytes.Buffer
 	writer := bufio.NewWriter(&b)
 	encoder := json.NewEncoder(writer)
@@ -208,16 +170,14 @@ func imageHandler(w http.ResponseWriter, r *http.Request) {
 		lat, _ = strconv.ParseFloat(r.FormValue("lat"), 64)
 		lng, _ = strconv.ParseFloat(r.FormValue("lng"), 64)
 	} else {
-		lat, lng = getLatLngFromAddress(address, ctx)
+		lat, lng = getLatLngFromAddress(ctx, address)
 	}
 
-	utm := getUTM(lat, lng)
-	band := getBand(lat)
-	mgrs := toMgrs(utm, band)
-	urls := getUrlsFromMgrs(mgrs, ctx)
-	imageUrls := getImageUrls(urls, ctx)
+    mgrs := GetMgrsFromCoords(lat, lng)
+	urls := getUrlsFromMgrs(ctx, mgrs)
+	imageUrls := getImageUrls(ctx, urls)
 
-	data := safeMarshalJson(imageUrls)
+	data := safeMarshalJSON(imageUrls)
 	fmt.Fprint(w, data)
 }
 
