@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 
+    "github.com/abiosoft/semaphore"
 	"cloud.google.com/go/bigquery"
 	"github.com/gorilla/mux"
 	"golang.org/x/net/context"
@@ -22,11 +23,12 @@ import (
 var storageAPIURL = "https://www.googleapis.com/storage/v1/b/gcp-public-data-sentinel-2/o?prefix="
 var googleGeoAPIURL = "https://maps.googleapis.com/maps/api/geocode/json?sensor=false&address="
 var apiKey = "AIzaSyBfbOhnMrQFj0BUHWA4EABJMW8qIts49WU"
+var maxConcurrentRequests = 100
 
 
 type queryResult struct {
-	GranuleID string
-	BaseURL   string
+	Granule_id string
+	Base_url   string
 }
 
 type googleGeocodeResponse struct {
@@ -44,13 +46,14 @@ type googleGeocodeResponse struct {
 // for the folder of the queryResult
 func formatURL(result queryResult) string {
 	return fmt.Sprintf("%s%s/GRANULE/%s/IMG_DATA/", storageAPIURL,
-		result.BaseURL[32:], result.GranuleID)
+		result.Base_url[32:], result.Granule_id)
 }
 
-
-func getUrlsBetweenCoords(ctx context.Context, lat1 float64, lng1 float64, lat2 float64, lng2 float64) []string {
+func getUrlsBetweenCoords(ctx context.Context, northLat float64, southLat float64, 
+                          eastLng float64, westLng float64) []string {
 	// Create a BigQuery client for the given projectID
 	// - the projectID needs to have permissions to use BigQuery
+    //projectID := "ecly-178408"
 	projectID := appengine.AppID(ctx)
 	client, err := bigquery.NewClient(ctx, projectID)
 	if err != nil {
@@ -62,8 +65,8 @@ func getUrlsBetweenCoords(ctx context.Context, lat1 float64, lng1 float64, lat2 
             SELECT granule_id, base_url 
 			FROM %sbigquery-public-data.cloud_storage_geo_index.sentinel_2_index%s
             WHERE north_lat <= %f AND south_lat >= %f
-            AND west_lon >= %f AND east_lon <= %f
-			`, "`", "`", "%", lat1, lat2, lng1, lng2))
+            AND east_lon <= %f AND west_lon >= %f 
+			`, "`", "`", northLat, southLat, eastLng, westLng))
 
 	it, queryErr := q.Read(ctx)
 	if queryErr != nil {
@@ -85,6 +88,7 @@ func getUrlsBetweenCoords(ctx context.Context, lat1 float64, lng1 float64, lat2 
 func getUrlsFromMgrs(ctx context.Context, mgrs string) []string {
 	// Create a BigQuery client for the given projectID
 	// - the projectID needs to have permissions to use BigQuery
+    //projectID := "ecly-178408"
 	projectID := appengine.AppID(ctx)
 	client, err := bigquery.NewClient(ctx, projectID)
 	if err != nil {
@@ -143,14 +147,23 @@ func getImageUrlsInDirectory(ctx context.Context, directory string, ch chan []st
 		urls = append(urls, itemMap["mediaLink"].(string))
 	}
 	ch <- urls
+    sem.Release()
 }
 
+func initiateRequests(ctx context.Context, directoryUrls []string, c chan []string) {
+	for _, directory := range directoryUrls {
+        sem.Acquire()
+        //log.Infof(ctx, "Starting request for: %s\n", directory)
+		go getImageUrlsInDirectory(ctx, directory, c)
+	}
+}
+
+var sem = semaphore.New(maxConcurrentRequests)
 func getImageUrls(ctx context.Context, directoryUrls []string) []string {
 	urls := make([]string, 0, 0)
 	c := make(chan []string)
-	for _, directory := range directoryUrls {
-		go getImageUrlsInDirectory(ctx, directory, c)
-	}
+
+    go initiateRequests(ctx, directoryUrls, c)
 	for range directoryUrls {
 		urls = append(urls, <-c...)
 	}
@@ -199,10 +212,9 @@ func imageHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := appengine.NewContext(r)
 	var lat, lng float64
 	// if param is an address, get latlng from from google geocode api
-	address := r.FormValue("address")
-	if address == "" {
-		lat, _ = strconv.ParseFloat(r.FormValue("lat"), 64)
-		lng, _ = strconv.ParseFloat(r.FormValue("lng"), 64)
+    if address := r.FormValue("address"); address == "" {
+        lat, _ = strconv.ParseFloat(r.FormValue("lat"), 64)
+        lng, _ = strconv.ParseFloat(r.FormValue("lng"), 64)
 	} else {
 		lat, lng = getLatLngFromAddress(ctx, address)
 	}
@@ -215,8 +227,48 @@ func imageHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, data)
 }
 
+func areaHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := appengine.NewContext(r)
+
+    northLat, _ := strconv.ParseFloat(r.FormValue("north_lat"), 64)
+    southLat, _ := strconv.ParseFloat(r.FormValue("south_lat"), 64)
+    eastLng, _ := strconv.ParseFloat(r.FormValue("east_lng"), 64)
+    westLng, _ := strconv.ParseFloat(r.FormValue("west_lng"), 64)
+
+	urls := getUrlsBetweenCoords(ctx, northLat, southLat, eastLng, westLng)
+	imageUrls := getImageUrls(ctx, urls)
+	data := safeMarshalJSON(imageUrls)
+	fmt.Fprint(w, data)
+}
+
+func testHandler(w http.ResponseWriter, r *http.Request) {
+	ctx := appengine.NewContext(r)
+    vars := mux.Vars(r)
+
+    var urls []string
+    if vars["case"] == "address" {
+        address := "Rued Langgaards Vej,7,2300,København S"
+        lat, lng := getLatLngFromAddress(ctx, address)
+        mgrs := GetMgrsFromCoords(lat,lng)
+        urls = getUrlsFromMgrs(ctx, mgrs)
+    } else if vars["case"] == "coords" {
+        mgrs := GetMgrsFromCoords(37.4224764, -122.0842499)
+        urls = getUrlsFromMgrs(ctx, mgrs)
+    } else if vars["case"] == "area" {
+        urls = getUrlsBetweenCoords(ctx, -2.89, -6.55, 29.63, 25.93)
+    } else {
+        log.Criticalf(ctx, "Bad testcase: %s\n", vars["case"])
+    }
+
+	imageUrls := getImageUrls(ctx, urls)
+	data := safeMarshalJSON(imageUrls)
+	fmt.Fprint(w, data)
+}
+
 func init() {
 	r := mux.NewRouter()
 	r.HandleFunc("/images", imageHandler)
+	r.HandleFunc("/images/area", areaHandler)
+	r.HandleFunc("/test/{case}", testHandler)
 	http.Handle("/", r)
 }
