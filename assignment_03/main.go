@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"strconv"
+    "time"
 
     "github.com/golang/geo/s2"
     "github.com/abiosoft/semaphore"
@@ -25,6 +26,9 @@ const storageAPIURL = "https://www.googleapis.com/storage/v1/b/gcp-public-data-s
 const googleGeoAPIURL = "https://maps.googleapis.com/maps/api/geocode/json?sensor=false&address="
 const apiKey = "AIzaSyBfbOhnMrQFj0BUHWA4EABJMW8qIts49WU"
 const maxConcurrentRequests = 100
+
+// timeout of bigquery client in minutes
+const timeout = 5
 
 //semaphore limit total number of concurrent goroutines
 var sem = semaphore.New(maxConcurrentRequests)
@@ -54,8 +58,10 @@ func formatURL(result queryResult) string {
 
 func getUrlsBetweenCoords(ctx context.Context, northLat float64, southLat float64, 
                           eastLng float64, westLng float64) []string {
-	projectID := appengine.AppID(ctx)
+	//projectID := appengine.AppID(ctx)
+    projectID := "ecly-178408"
 	client, err := bigquery.NewClient(ctx, projectID)
+    defer client.Close()
 	if err != nil {
 		log.Errorf(ctx, "Failed to create client: %v", err)
 	}
@@ -87,8 +93,10 @@ func getUrlsBetweenCoords(ctx context.Context, northLat float64, southLat float6
 }
 
 func getUrlsFromMgrs(ctx context.Context, mgrs string) []string {
-	projectID := appengine.AppID(ctx)
+	//projectID := appengine.AppID(ctx)
+    projectID := "ecly-178408"
 	client, err := bigquery.NewClient(ctx, projectID)
+    defer client.Close()
 	if err != nil {
 		log.Errorf(ctx, "Failed to create client: %v", err)
 	}
@@ -174,6 +182,7 @@ func getImageUrls(ctx context.Context, directoryUrls []string) []string {
 
 func getLatLngFromAddress(ctx context.Context, address string) (float64, float64) {
 	client := urlfetch.Client(ctx)
+
 	mapsClient, err := maps.NewClient(maps.WithAPIKey(apiKey), maps.WithHTTPClient(client))
 	if err != nil {
 		log.Errorf(ctx, "Failed to create client: %v", err)
@@ -196,14 +205,14 @@ func getImageCountFromCells(ctx context.Context, cells []s2.Cell) int {
     
     // concurrently retrieve image count for each cell
     for _, cell := range cells {
-        go func(cell s2.Cell) {
+       go func(cell s2.Cell) {
             bounds := cell.RectBound()
             lo := bounds.Lo()
             hi := bounds.Hi()
             urls := getUrlsBetweenCoords(ctx, hi.Lat.Degrees(), lo.Lat.Degrees(), 
                                           hi.Lng.Degrees(), lo.Lng.Degrees())
             c<-len(urls)
-        } (cell)
+         } (cell)
     }
 
     for range cells {
@@ -235,6 +244,8 @@ func safeMarshalJSON(imageUrls []string) string {
 
 func imageHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := appengine.NewContext(r)
+    ctx, _ = context.WithTimeout(ctx, timeout*time.Minute)
+
 	var lat, lng float64
 	// if param is an address, get latlng from from google geocode api
     if address := r.FormValue("address"); address == "" {
@@ -254,6 +265,7 @@ func imageHandler(w http.ResponseWriter, r *http.Request) {
 
 func areaHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := appengine.NewContext(r)
+    ctx, _ = context.WithTimeout(ctx, timeout*time.Minute)
 
     northLat, _ := strconv.ParseFloat(r.FormValue("north_lat"), 64)
     southLat, _ := strconv.ParseFloat(r.FormValue("south_lat"), 64)
@@ -268,6 +280,8 @@ func areaHandler(w http.ResponseWriter, r *http.Request) {
 
 func testHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := appengine.NewContext(r)
+    ctx, _ = context.WithTimeout(ctx, timeout*time.Minute)
+
     vars := mux.Vars(r)
 
     var urls []string
@@ -293,6 +307,7 @@ func testHandler(w http.ResponseWriter, r *http.Request) {
 
 func polyHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := appengine.NewContext(r)
+    ctx, _ = context.WithTimeout(ctx, timeout*time.Minute)
     vars := mux.Vars(r)
 
     region := vars["region"]
