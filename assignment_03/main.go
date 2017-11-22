@@ -29,9 +29,6 @@ const maxConcurrentRequests = 100
 //semaphore limit total number of concurrent goroutines
 var sem = semaphore.New(maxConcurrentRequests)
 
-// The appengine projectID, expected to have BigQuery permissions
-var projectID string
-
 type queryResult struct {
 	Granule_id string
 	Base_url   string
@@ -57,6 +54,7 @@ func formatURL(result queryResult) string {
 
 func getUrlsBetweenCoords(ctx context.Context, northLat float64, southLat float64, 
                           eastLng float64, westLng float64) []string {
+	projectID := appengine.AppID(ctx)
 	client, err := bigquery.NewClient(ctx, projectID)
 	if err != nil {
 		log.Errorf(ctx, "Failed to create client: %v", err)
@@ -89,6 +87,7 @@ func getUrlsBetweenCoords(ctx context.Context, northLat float64, southLat float6
 }
 
 func getUrlsFromMgrs(ctx context.Context, mgrs string) []string {
+	projectID := appengine.AppID(ctx)
 	client, err := bigquery.NewClient(ctx, projectID)
 	if err != nil {
 		log.Errorf(ctx, "Failed to create client: %v", err)
@@ -314,7 +313,6 @@ func polyHandler(w http.ResponseWriter, r *http.Request) {
 
 func init() {
     //projectID = "ecly-178408"
-	projectID := appengine.AppID(ctx)
 	r := mux.NewRouter()
 	r.HandleFunc("/images", imageHandler)
 	r.HandleFunc("/images/area", areaHandler)
