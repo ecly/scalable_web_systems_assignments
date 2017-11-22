@@ -45,7 +45,7 @@ func CellsFromPolygons(polygons [][]s2.Point) []s2.Cell {
         l1 := s2.LoopFromPoints(points) 
         loops := []*s2.Loop{l1} 
         poly := s2.PolygonFromLoops(loops) 
-        rc := &s2.RegionCoverer{MaxLevel: 30, MaxCells: 100}
+        rc := &s2.RegionCoverer{MaxLevel: 30, MaxCells: 10}
         cover := rc.Covering(poly)
         for _, cid := range cover {
             cells = append(cells, s2.CellFromCellID(cid))

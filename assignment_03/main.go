@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 
+    "github.com/golang/geo/s2"
     "github.com/abiosoft/semaphore"
 	"cloud.google.com/go/bigquery"
 	"github.com/gorilla/mux"
@@ -71,7 +72,8 @@ func getUrlsBetweenCoords(ctx context.Context, northLat float64, southLat float6
 
 	it, queryErr := q.Read(ctx)
 	if queryErr != nil {
-		log.Errorf(ctx, "Query failed to execute: %v", queryErr)
+		log.Criticalf(ctx, "Query failed to execute: %v", queryErr)
+        return make([]string, 0)
 	}
 
 	urls := make([]string, 0, 0)
@@ -188,6 +190,30 @@ func getLatLngFromAddress(ctx context.Context, address string) (float64, float64
 	return lat, lng
 }
 
+// Count the amount of sentinel images available for the given cells
+func getImageCountFromCells(ctx context.Context, cells []s2.Cell) int {
+    c := make(chan int)
+    count := 0
+    
+    // concurrently retrieve image count for each cell
+    for _, cell := range cells {
+        go func(cell s2.Cell) {
+            bounds := cell.RectBound()
+            lo := bounds.Lo()
+            hi := bounds.Hi()
+            urls := getUrlsBetweenCoords(ctx, hi.Lat.Degrees(), lo.Lat.Degrees(), 
+                                          hi.Lng.Degrees(), lo.Lng.Degrees())
+            c<-len(urls)
+        } (cell)
+    }
+
+    for range cells {
+        count += <-c
+    }
+
+    return count
+}
+
 // Since google appengine inexplicably will not compile when using
 // json.SetEscapeHTML(true), we've had to made our own version, where
 // we temporarily encode the json to a buffer, and replace escaped characters
@@ -273,23 +299,22 @@ func polyHandler(w http.ResponseWriter, r *http.Request) {
     region := vars["region"]
     country := vars["country"]
     if region == "" || country == "" {
-        log.Criticalf(ctx, "Bad testcase: %s\n", vars["case"])
+        log.Criticalf(ctx, "Bad or missing region or country.")
     } 
 
     url := fmt.Sprintf("http://download.geofabrik.de/%s/%s.poly", region, country)
     file := downloadFile(ctx, url)
     polygons := ParsePolyFile(bytes.NewReader(file))
     cells := CellsFromPolygons(polygons)
-    for _, c := range cells {
-        log.Debugf(ctx, "%v, %v\n", c.RectBound().Lo(), c.RectBound().Hi())
-    }
 
-	fmt.Fprint(w, 0)
+    count := getImageCountFromCells(ctx, cells)
+
+    fmt.Fprint(w, "Amount of images in region: ", count)
 }
 
 func init() {
-    projectID = "ecly-178408"
-	//projectID := appengine.AppID(ctx)
+    //projectID = "ecly-178408"
+	projectID := appengine.AppID(ctx)
 	r := mux.NewRouter()
 	r.HandleFunc("/images", imageHandler)
 	r.HandleFunc("/images/area", areaHandler)
