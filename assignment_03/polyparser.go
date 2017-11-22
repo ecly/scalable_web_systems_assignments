@@ -2,7 +2,6 @@ package app
 
 import (
     "github.com/golang/geo/s2"
-    "fmt"
     "log"
     "strconv"
     "strings"
@@ -49,8 +48,6 @@ func CellsFromPolygons(polygons [][]s2.Point) []s2.Cell {
         cover := rc.Covering(poly)
         for _, cid := range cover {
             cells = append(cells, s2.CellFromCellID(cid))
-            cell := s2.CellFromCellID(cid)
-            fmt.Printf("lob:%v, hib:%v\n", cell.RectBound().Lo(), cell.RectBound().Hi())
         }
     }
     return cells
