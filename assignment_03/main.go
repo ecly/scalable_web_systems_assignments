@@ -295,13 +295,12 @@ func polyHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := appengine.NewContext(r)
     vars := mux.Vars(r)
 
-    region := vars["region"]
-    country := vars["country"]
-    if region == "" || country == "" {
-        log.Criticalf(ctx, "Bad or missing region or country.")
+    area := vars["area"]
+    if area == "" {
+        log.Criticalf(ctx, "Bad or missing area")
     } 
 
-    url := fmt.Sprintf("http://download.geofabrik.de/%s/%s.poly", region, country)
+    url := fmt.Sprintf("http://download.geofabrik.de/%s.poly", area)
     file := downloadFile(ctx, url)
     polygons := ParsePolyFile(bytes.NewReader(file))
     cells := CellsFromPolygons(polygons)
@@ -317,6 +316,6 @@ func init() {
 	r.HandleFunc("/images", imageHandler)
 	r.HandleFunc("/images/area", areaHandler)
 	r.HandleFunc("/test/{case}", testHandler)
-	r.HandleFunc("/poly/{region}/{country}", polyHandler)
+	r.HandleFunc("/poly/{area}", polyHandler)
 	http.Handle("/", r)
 }
