@@ -28,6 +28,9 @@ const maxConcurrentRequests = 100
 //semaphore limit total number of concurrent goroutines
 var sem = semaphore.New(maxConcurrentRequests)
 
+// The appengine projectID, expected to have BigQuery permissions
+var projectID string
+
 type queryResult struct {
 	Granule_id string
 	Base_url   string
@@ -53,10 +56,6 @@ func formatURL(result queryResult) string {
 
 func getUrlsBetweenCoords(ctx context.Context, northLat float64, southLat float64, 
                           eastLng float64, westLng float64) []string {
-	// Create a BigQuery client for the given projectID
-	// - the projectID needs to have permissions to use BigQuery
-    //projectID := "ecly-178408"
-	projectID := appengine.AppID(ctx)
 	client, err := bigquery.NewClient(ctx, projectID)
 	if err != nil {
 		log.Errorf(ctx, "Failed to create client: %v", err)
@@ -88,10 +87,6 @@ func getUrlsBetweenCoords(ctx context.Context, northLat float64, southLat float6
 }
 
 func getUrlsFromMgrs(ctx context.Context, mgrs string) []string {
-	// Create a BigQuery client for the given projectID
-	// - the projectID needs to have permissions to use BigQuery
-    //projectID := "ecly-178408"
-	projectID := appengine.AppID(ctx)
 	client, err := bigquery.NewClient(ctx, projectID)
 	if err != nil {
 		log.Errorf(ctx, "Failed to create client: %v", err)
@@ -121,12 +116,10 @@ func getUrlsFromMgrs(ctx context.Context, mgrs string) []string {
 	return urls
 }
 
-
-func getImageUrlsInDirectory(ctx context.Context, directory string, ch chan []string) {
-	urls := make([]string, 0, 0)
+// Download a file using urlfetch with the given context at the given URL
+func downloadFile(ctx context.Context, url string) []byte {
 	client := urlfetch.Client(ctx)
-
-	req, err := http.NewRequest(http.MethodGet, directory, nil)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		log.Errorf(ctx, err.Error())
 	}
@@ -134,10 +127,16 @@ func getImageUrlsInDirectory(ctx context.Context, directory string, ch chan []st
 	if resErr != nil {
 		log.Errorf(ctx, resErr.Error())
 	}
-	body, readErr := ioutil.ReadAll(res.Body)
+	file, readErr := ioutil.ReadAll(res.Body)
 	if readErr != nil {
 		log.Errorf(ctx, readErr.Error())
 	}
+    return file
+}
+
+func getImageUrlsInDirectory(ctx context.Context, directory string, ch chan []string) {
+	urls := make([]string, 0, 0)
+    body := downloadFile(ctx, directory)
 	c := make(map[string]interface{})
 	json.Unmarshal(body, &c)
 
@@ -266,36 +265,31 @@ func testHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, data)
 }
 
+
 func polyHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := appengine.NewContext(r)
     vars := mux.Vars(r)
 
     region := vars["region"]
     country := vars["country"]
-    if region == "" || subregion == "" {
+    if region == "" || country == "" {
         log.Criticalf(ctx, "Bad testcase: %s\n", vars["case"])
     } 
 
     url := fmt.Sprintf("http://download.geofabrik.de/%s/%s.poly", region, country)
+    file := downloadFile(ctx, url)
+    polygons := ParsePolyFile(bytes.NewReader(file))
+    cells := CellsFromPolygons(polygons)
+    for _, c := range cells {
+        log.Debugf(ctx, "%v, %v\n", c.RectBound().Lo(), c.RectBound().Hi())
+    }
 
-	client := urlfetch.Client(ctx)
-	req, err := http.NewRequest(http.MethodGet, directory, nil)
-
-	res, resErr := client.Do(req)
-	if resErr != nil {
-		log.Errorf(ctx, resErr.Error())
-	}
-	file, readErr := ioutil.ReadAll(res.Body)
-	if readErr != nil {
-		log.Errorf(ctx, readErr.Error())
-	}
-    parsePolyFile(file)
-
-	data := safeMarshalJSON(imageUrls)
-	fmt.Fprint(w, data)
+	fmt.Fprint(w, 0)
 }
 
 func init() {
+    projectID = "ecly-178408"
+	//projectID := appengine.AppID(ctx)
 	r := mux.NewRouter()
 	r.HandleFunc("/images", imageHandler)
 	r.HandleFunc("/images/area", areaHandler)
